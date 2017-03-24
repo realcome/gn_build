@@ -4,7 +4,7 @@ vars = {
 
 deps = {
     'src/buildtools':
-        Var('git_url') + '/chromium/buildtools.git@39b1db2ab4aa4b2ccaa263c29bdf63e7c1ee28aa',
+        Var('git_url') + '/chromium/buildtools.git@cb12d6e8641f0c9b0fbbfa4bf17c55c6c0d3c38f',
 }
 
 hooks = [{
