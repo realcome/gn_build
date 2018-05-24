@@ -5,6 +5,8 @@ vars = {
 deps = {
     'src/buildtools':
         Var('git_url') + '/chromium/buildtools.git@cb12d6e8641f0c9b0fbbfa4bf17c55c6c0d3c38f',
+    'src/tools/gyp':
+        (Var("git_url")) + '/external/gyp.git@d61a9397e668fa9843c4aa7da9e79460fe590bfb',
 }
 
 hooks = [{
