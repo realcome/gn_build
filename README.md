@@ -12,10 +12,3 @@ solutions = [{
   'deps_file': 'DEPS',
 }]
 ```
-
-And then create .gclient_entries file:
-```
-entries = {
-  'src/tools/gyp': 'https://chromium.googlesource.com/external/gyp.git@d61a9397e668fa9843c4aa7da9e79460fe590bfb',
-}
-```
