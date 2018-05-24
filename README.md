@@ -2,7 +2,7 @@
 
 The first step is to [install Chromium's depot_tools](http://www.chromium.org/developers/how-tos/install-depot-tools). We use depot_tools to pull in our other dependencies (e.g., gn).
 
-Once you've installed depot_tools, create a .gclient file in an empty directory with the following contents:
+Once you've installed depot_tools, create a ```.gclient``` file in an empty directory with the following contents:
 
 ```
 solutions = [{
@@ -12,3 +12,4 @@ solutions = [{
   'deps_file': 'DEPS',
 }]
 ```
+And then run ```gclient sync```
