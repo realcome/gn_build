@@ -1,25 +1,74 @@
-use_relative_paths = True
-
 vars = {
-  "chromium_url": "https://chromium.googlesource.com",
-
-  "clang_format_rev": "0653eee0c81ea04715c635dd0885e8096ff6ba6d",   # r302580
-  "libcxx_revision": "27c341db41bc9df5c6f19cde65f002d6f1c2eb3c",    # r323563
-  "libcxxabi_revision": "e1601db2504857d44db88a5d4e2ca50b32bbb7d9", # r323495
-  "libunwind_revision": "86ab23972978242b6f9e27cebc239f3e8428b1af", # r323499
+    'git_url': 'https://chromium.googlesource.com',
 }
 
 deps = {
-  "clang_format/script":
-    Var("chromium_url") + "/chromium/llvm-project/cfe/tools/clang-format.git@" +
-    Var("clang_format_rev"),
-  "third_party/libc++/trunk":
-    Var("chromium_url") + "/chromium/llvm-project/libcxx.git" + "@" +
-    Var("libcxx_revision"),
-  "third_party/libc++abi/trunk":
-    Var("chromium_url") + "/chromium/llvm-project/libcxxabi.git" + "@" +
-    Var("libcxxabi_revision"),
-  "third_party/libunwind/trunk":
-    Var("chromium_url") + "/external/llvm.org/libunwind.git" + "@" +
-    Var("libunwind_revision"),
+    'src/buildtools':
+        Var('git_url') + '/chromium/buildtools.git@cb12d6e8641f0c9b0fbbfa4bf17c55c6c0d3c38f',
+    'src/tools/gyp':
+        (Var("git_url")) + '/external/gyp.git@d61a9397e668fa9843c4aa7da9e79460fe590bfb',
 }
+
+hooks = [{
+    'action': [
+        'download_from_google_storage',
+        '--no_resume',
+        '--platform=win32',
+        '--no_auth',
+        '--bucket',
+        'chromium-gn',
+        '-s',
+        'src/buildtools/win/gn.exe.sha1'
+    ],
+    'pattern': '.',
+    'name': 'gn_win'
+}, {
+    'action': [
+        'download_from_google_storage',
+        '--no_resume',
+        '--platform=darwin',
+        '--no_auth',
+        '--bucket',
+        'chromium-gn',
+        '-s',
+        'src/buildtools/mac/gn.sha1'
+    ],
+    'pattern': '.',
+    'name': 'gn_mac'
+}, {
+    'action': [
+        'download_from_google_storage',
+        '--no_resume',
+        '--platform=linux*',
+        '--no_auth',
+        '--bucket',
+        'chromium-gn',
+        '-s',
+        'src/buildtools/linux32/gn.sha1'
+    ],
+    'pattern': '.',
+    'name': 'gn_linux32'
+}, {
+    'action': [
+        'download_from_google_storage',
+        '--no_resume',
+        '--platform=linux*',
+        '--no_auth',
+        '--bucket',
+        'chromium-gn',
+        '-s',
+        'src/buildtools/linux64/gn.sha1'
+    ],
+    'pattern': '.',
+    'name': 'gn_linux64'
+}, {
+    'action': [
+      'python',
+      'src/build/vs_toolchain.py',
+      'update'
+    ],
+    'pattern':
+      '.',
+    'name':
+      'win_toolchain'
+  }]
