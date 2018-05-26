@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import contextlib
 import datetime
 import functools
 import logging
@@ -11,18 +10,27 @@ import shutil
 import tempfile
 import threading
 
+import devil_chromium
 from devil import base_error
 from devil.android import device_blacklist
 from devil.android import device_errors
-from devil.android import device_list
 from devil.android import device_utils
 from devil.android import logcat_monitor
+from devil.android.sdk import adb_wrapper
 from devil.utils import file_utils
 from devil.utils import parallelizer
 from pylib import constants
 from pylib.base import environment
+from pylib.utils import instrumentation_tracing
 from py_trace_event import trace_event
-from tracing_build import trace2html
+
+
+LOGCAT_FILTERS = [
+  'chromium:v',
+  'cr_*:v',
+  'DEBUG:I',
+  'StrictMode:D',
+]
 
 
 def _DeviceCachePath(device):
@@ -76,12 +84,12 @@ def handle_shard_failures_with(on_failure):
 
 class LocalDeviceEnvironment(environment.Environment):
 
-  def __init__(self, args, _error_func):
-    super(LocalDeviceEnvironment, self).__init__()
+  def __init__(self, args, output_manager, _error_func):
+    super(LocalDeviceEnvironment, self).__init__(output_manager)
     self._blacklist = (device_blacklist.Blacklist(args.blacklist_file)
                        if args.blacklist_file
                        else None)
-    self._device_serial = args.test_device
+    self._device_serials = args.test_devices
     self._devices_lock = threading.Lock()
     self._devices = None
     self._concurrent_adb = args.enable_concurrent_adb
@@ -90,42 +98,50 @@ class LocalDeviceEnvironment(environment.Environment):
     self._logcat_output_dir = args.logcat_output_dir
     self._logcat_output_file = args.logcat_output_file
     self._max_tries = 1 + args.num_retries
+    self._recover_devices = args.recover_devices
     self._skip_clear_data = args.skip_clear_data
-    self._target_devices_file = args.target_devices_file
     self._tool_name = args.tool
-    self._trace_output = args.trace_output
+    self._trace_output = None
+    if hasattr(args, 'trace_output'):
+      self._trace_output = args.trace_output
+    self._trace_all = None
+    if hasattr(args, 'trace_all'):
+      self._trace_all = args.trace_all
+
+    devil_chromium.Initialize(
+        output_directory=constants.GetOutDirectory(),
+        adb_path=args.adb_path)
+
+    # Some things such as Forwarder require ADB to be in the environment path.
+    adb_dir = os.path.dirname(adb_wrapper.AdbWrapper.GetAdbPath())
+    if adb_dir and adb_dir not in os.environ['PATH'].split(os.pathsep):
+      os.environ['PATH'] = adb_dir + os.pathsep + os.environ['PATH']
 
   #override
   def SetUp(self):
-    pass
+    if self.trace_output and self._trace_all:
+      to_include = [r"pylib\..*", r"devil\..*", "__main__"]
+      to_exclude = ["logging"]
+      instrumentation_tracing.start_instrumenting(self.trace_output, to_include,
+                                                  to_exclude)
+    elif self.trace_output:
+      self.EnableTracing()
 
   def _InitDevices(self):
-    device_arg = 'default'
-    if self._target_devices_file:
-      device_arg = device_list.GetPersistentDeviceList(
-          self._target_devices_file)
-      if not device_arg:
-        logging.warning('No target devices specified. Falling back to '
-                        'running on all available devices.')
-        device_arg = 'default'
-      else:
-        logging.info(
-            'Read device list %s from target devices file.', str(device_arg))
-    elif self._device_serial:
-      device_arg = self._device_serial
+    device_arg = []
+    if self._device_serials:
+      device_arg = self._device_serials
 
     self._devices = device_utils.DeviceUtils.HealthyDevices(
         self._blacklist, enable_device_files_cache=self._enable_device_cache,
         default_retries=self._max_tries - 1, device_arg=device_arg)
-    if not self._devices:
-      raise device_errors.NoDevicesError
 
     if self._logcat_output_file:
       self._logcat_output_dir = tempfile.mkdtemp()
 
     @handle_shard_failures_with(on_failure=self.BlacklistDevice)
     def prepare_device(d):
-      d.WaitUntilFullyBooted(timeout=10)
+      d.WaitUntilFullyBooted()
 
       if self._enable_device_cache:
         cache_path = _DeviceCachePath(d)
@@ -148,15 +164,6 @@ class LocalDeviceEnvironment(environment.Environment):
 
     self.parallel_devices.pMap(prepare_device)
 
-  @staticmethod
-  def _JsonToTrace(json_path, html_path, delete_json=True):
-    # First argument is call site.
-    cmd = [__file__, json_path, '--title', 'Android Test Runner Trace',
-           '--output', html_path]
-    trace2html.Main(cmd)
-    if delete_json:
-      os.remove(json_path)
-
   @property
   def blacklist(self):
     return self._blacklist
@@ -171,8 +178,6 @@ class LocalDeviceEnvironment(environment.Environment):
     # attached.
     if self._devices is None:
       self._InitDevices()
-    if not self._devices:
-      raise device_errors.NoDevicesError()
     return self._devices
 
   @property
@@ -182,6 +187,10 @@ class LocalDeviceEnvironment(environment.Environment):
   @property
   def parallel_devices(self):
     return parallelizer.SyncParallelizer(self.devices)
+
+  @property
+  def recover_devices(self):
+    return self._recover_devices
 
   @property
   def skip_clear_data(self):
@@ -197,8 +206,14 @@ class LocalDeviceEnvironment(environment.Environment):
 
   #override
   def TearDown(self):
-    if self._devices is None:
+    if self.trace_output and self._trace_all:
+      instrumentation_tracing.stop_instrumenting()
+    elif self.trace_output:
+      self.DisableTracing()
+
+    if not self._devices:
       return
+
     @handle_shard_failures_with(on_failure=self.BlacklistDevice)
     def tear_down_device(d):
       # Write the cache even when not using it so that it will be ready the
@@ -247,25 +262,20 @@ class LocalDeviceEnvironment(environment.Environment):
       self._blacklist.Extend([device_serial], reason=reason)
     with self._devices_lock:
       self._devices = [d for d in self._devices if str(d) != device_serial]
+    logging.error('Device %s blacklisted: %s', device_serial, reason)
+    if not self._devices:
+      raise device_errors.NoDevicesError(
+          'All devices were blacklisted due to errors')
 
-  def DisableTracing(self):
+  @staticmethod
+  def DisableTracing():
     if not trace_event.trace_is_enabled():
       logging.warning('Tracing is not running.')
     else:
       trace_event.trace_disable()
-    self._JsonToTrace(self._trace_output + '.json',
-                      self._trace_output)
 
   def EnableTracing(self):
     if trace_event.trace_is_enabled():
       logging.warning('Tracing is already running.')
     else:
-      trace_event.trace_enable(self._trace_output + '.json')
-
-  @contextlib.contextmanager
-  def Tracing(self):
-    try:
-      self.EnableTracing()
-      yield
-    finally:
-      self.DisableTracing()
+      trace_event.trace_enable(self._trace_output)

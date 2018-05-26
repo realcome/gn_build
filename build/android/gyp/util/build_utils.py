@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import ast
+import collections
 import contextlib
 import fnmatch
 import json
@@ -21,6 +22,7 @@ import zipfile
 import md5_check  # pylint: disable=relative-import
 
 sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+from pylib import constants
 from pylib.constants import host_paths
 
 sys.path.append(os.path.join(os.path.dirname(__file__),
@@ -29,9 +31,14 @@ import gn_helpers
 
 COLORAMA_ROOT = os.path.join(host_paths.DIR_SOURCE_ROOT,
                              'third_party', 'colorama', 'src')
-# aapt should ignore OWNERS files in addition the default ignore pattern.
-AAPT_IGNORE_PATTERN = ('!OWNERS:!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:' +
-                       '!CVS:!thumbs.db:!picasa.ini:!*~:!*.d.stamp')
+AAPT_IGNORE_PATTERN = ':'.join([
+    'OWNERS',  # Allow OWNERS files within res/
+    '*.py',  # PRESUBMIT.py sometimes exist.
+    '*.pyc',
+    '*~',  # Some editors create these as temp files.
+    '.*',  # Never makes sense to include dot(files/dirs).
+    '*.d.stamp', # Ignore stamp files
+    ])
 HERMETIC_TIMESTAMP = (2001, 1, 1, 0, 0, 0)
 _HERMETIC_FILE_ATTR = (0644 << 16L)
 
@@ -43,6 +50,12 @@ def TempDir():
     yield dirname
   finally:
     shutil.rmtree(dirname)
+
+
+def IterFiles(root_dir):
+  for root, _, files in os.walk(root_dir):
+    for f in files:
+      yield os.path.join(root, f)
 
 
 def MakeDirectory(dir_path):
@@ -79,6 +92,14 @@ def FindInDirectories(directories, filename_filter):
   for directory in directories:
     all_files.extend(FindInDirectory(directory, filename_filter))
   return all_files
+
+
+def ReadBuildVars(build_vars_path=None):
+  if not build_vars_path:
+    build_vars_path = os.path.join(constants.GetOutDirectory(),
+                                   "build_vars.txt")
+  with open(build_vars_path) as f:
+    return dict(l.rstrip().split('=', 1) for l in f)
 
 
 def ParseGnList(gn_string):
@@ -224,6 +245,7 @@ def ExtractAll(zip_path, path=None, no_clobber=True, pattern=None,
   if not zipfile.is_zipfile(zip_path):
     raise Exception('Invalid zip file: %s' % zip_path)
 
+  extracted = []
   with zipfile.ZipFile(zip_path) as z:
     for name in z.namelist():
       if name.endswith('/'):
@@ -244,8 +266,12 @@ def ExtractAll(zip_path, path=None, no_clobber=True, pattern=None,
         dest = os.path.join(path, name)
         MakeDirectory(os.path.dirname(dest))
         os.symlink(z.read(name), dest)
+        extracted.append(dest)
       else:
         z.extract(name, path)
+        extracted.append(os.path.join(path, name))
+
+  return extracted
 
 
 def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
@@ -257,7 +283,7 @@ def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
     zip_path: Destination path within the zip file.
     src_path: Path of the source file. Mutually exclusive with |data|.
     data: File data as a string.
-    compress: Whether to enable compression. Default is take from ZipFile
+    compress: Whether to enable compression. Default is taken from ZipFile
         constructor.
   """
   assert (src_path is None) != (data is None), (
@@ -289,13 +315,15 @@ def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
   zip_file.writestr(zipinfo, data, compress_type)
 
 
-def DoZip(inputs, output, base_dir=None):
+def DoZip(inputs, output, base_dir=None, compress_fn=None):
   """Creates a zip file from a list of files.
 
   Args:
     inputs: A list of paths to zip, or a list of (zip_path, fs_path) tuples.
     output: Destination .zip file.
     base_dir: Prefix to strip from inputs.
+    compress_fn: Applied to each input to determine whether or not to compress.
+        By default, items will be |zipfile.ZIP_STORED|.
   """
   input_tuples = []
   for tup in inputs:
@@ -307,16 +335,17 @@ def DoZip(inputs, output, base_dir=None):
   input_tuples.sort(key=lambda tup: tup[0])
   with zipfile.ZipFile(output, 'w') as outfile:
     for zip_path, fs_path in input_tuples:
-      AddToZipHermetic(outfile, zip_path, src_path=fs_path)
+      compress = compress_fn(zip_path) if compress_fn else None
+      AddToZipHermetic(outfile, zip_path, src_path=fs_path, compress=compress)
 
 
-def ZipDir(output, base_dir):
+def ZipDir(output, base_dir, compress_fn=None):
   """Creates a zip file from a directory."""
   inputs = []
   for root, _, files in os.walk(base_dir):
     for f in files:
       inputs.append(os.path.join(root, f))
-  DoZip(inputs, output, base_dir)
+  DoZip(inputs, output, base_dir, compress_fn=compress_fn)
 
 
 def MatchesGlob(path, filters):
@@ -367,37 +396,28 @@ def PrintBigWarning(message):
 def GetSortedTransitiveDependencies(top, deps_func):
   """Gets the list of all transitive dependencies in sorted order.
 
-  There should be no cycles in the dependency graph.
+  There should be no cycles in the dependency graph (crashes if cycles exist).
 
   Args:
-    top: a list of the top level nodes
-    deps_func: A function that takes a node and returns its direct dependencies.
+    top: A list of the top level nodes
+    deps_func: A function that takes a node and returns a list of its direct
+        dependencies.
   Returns:
     A list of all transitive dependencies of nodes in top, in order (a node will
     appear in the list at a higher index than all of its dependencies).
   """
-  def Node(dep):
-    return (dep, deps_func(dep))
+  # Find all deps depth-first, maintaining original order in the case of ties.
+  deps_map = collections.OrderedDict()
+  def discover(nodes):
+    for node in nodes:
+      if node in deps_map:
+        continue
+      deps = deps_func(node)
+      discover(deps)
+      deps_map[node] = deps
 
-  # First: find all deps
-  unchecked_deps = list(top)
-  all_deps = set(top)
-  while unchecked_deps:
-    dep = unchecked_deps.pop()
-    new_deps = deps_func(dep).difference(all_deps)
-    unchecked_deps.extend(new_deps)
-    all_deps = all_deps.union(new_deps)
-
-  # Then: simple, slow topological sort.
-  sorted_deps = []
-  unsorted_deps = dict(map(Node, all_deps))
-  while unsorted_deps:
-    for library, dependencies in unsorted_deps.items():
-      if not dependencies.intersection(unsorted_deps.keys()):
-        sorted_deps.append(library)
-        del unsorted_deps[library]
-
-  return sorted_deps
+  discover(top)
+  return deps_map.keys()
 
 
 def GetPythonDependencies():

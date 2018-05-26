@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/c++/c++.gni")
 import("//build/config/compiler/compiler.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/sysroot.gni")
@@ -16,6 +17,7 @@ declare_args() {
   # especially when cross-compiling.
   # Note: this gn arg is similar to gyp target_rpath generator flag.
   gcc_target_rpath = ""
+  ldso_path = ""
 }
 
 # This config causes functions not to be automatically exported from shared
@@ -29,9 +31,13 @@ declare_args() {
 #
 # See http://gcc.gnu.org/wiki/Visibility
 config("symbol_visibility_hidden") {
-  # Note that -fvisibility-inlines-hidden is set globally in the compiler
-  # config since that can almost always be applied.
   cflags = [ "-fvisibility=hidden" ]
+
+  # Visibility attribute is not supported on AIX.
+  if (current_os != "aix") {
+    cflags_cc = [ "-fvisibility-inlines-hidden" ]
+    cflags_objcc = cflags_cc
+  }
 }
 
 # This config is usually set when :symbol_visibility_hidden is removed.
@@ -84,6 +90,9 @@ config("rpath_for_built_shared_libraries") {
         "-Wl,-rpath-link=${rpath_link}",
       ]
     }
+    if (current_toolchain == default_toolchain && ldso_path != "") {
+      ldflags += [ "-Wl,--dynamic-linker=${ldso_path}" ]
+    }
   }
 }
 
@@ -102,15 +111,15 @@ config("executable_ldconfig") {
   } else {
     # See the rpath_for... config above for why this is necessary for component
     # builds. Sanitizers use a custom libc++ where this is also necessary.
-    if (is_component_build || using_sanitizer) {
+    if (is_component_build || using_sanitizer || !libcpp_is_static) {
       configs = [ ":rpath_for_built_shared_libraries" ]
     }
-    if (current_cpu == "mipsel") {
+    if (current_cpu == "mipsel" || current_cpu == "mips64el") {
       ldflags += [ "-pie" ]
     }
   }
 
-  if (!is_android || !use_gold) {
+  if ((!is_android || !use_gold) && current_os != "aix") {
     # Find the path containing shared libraries for this toolchain
     # relative to the build directory. ${root_out_dir} will be a
     # subdirectory of ${root_build_dir} when cross compiling.
@@ -119,7 +128,7 @@ config("executable_ldconfig") {
       _rpath_link += "/$shlib_subdir"
     }
     if (is_android) {
-      _rebased_sysroot = rebase_path(sysroot, root_build_dir)
+      _rebased_sysroot = rebase_path(link_sysroot, root_build_dir)
       _rpath_link += ":$_rebased_sysroot/usr/lib"
     }
 
@@ -133,9 +142,4 @@ config("executable_ldconfig") {
       "-Wl,--disable-new-dtags",
     ]
   }
-}
-
-config("no_exceptions") {
-  cflags_cc = [ "-fno-exceptions" ]
-  cflags_objcc = cflags_cc
 }

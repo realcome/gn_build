@@ -23,6 +23,20 @@ import time
 ADDR2LINE_RECYCLE_LIMIT = 4000
 
 
+ELF_MAGIC = '\x7f\x45\x4c\x46'
+
+
+def ContainsElfMagic(file_path):
+  if os.path.getsize(file_path) < 4:
+    return False
+  try:
+    with open(file_path, 'r') as f:
+      b = f.read(4)
+      return b == ELF_MAGIC
+  except IOError:
+    return False
+
+
 class ELFSymbolizer(object):
   """An uber-fast (multiprocessing, pipelined and asynchronous) ELF symbolizer.
 
@@ -170,6 +184,11 @@ class ELFSymbolizer(object):
       a2l.WaitForNextSymbolInQueue()
 
     a2l.EnqueueRequest(addr, callback_arg)
+
+  def WaitForIdle(self):
+    """Waits for all the outstanding requests to complete."""
+    for a2l in self._a2l_instances:
+      a2l.WaitForIdle()
 
   def Join(self):
     """Waits for all the outstanding requests to complete and terminates."""

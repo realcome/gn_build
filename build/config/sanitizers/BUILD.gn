@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build_overrides/build.gni")
+import("//build/config/chrome_build.gni")
 import("//build/config/chromecast_build.gni")
 import("//build/config/clang/clang.gni")
 import("//build/config/sanitizers/sanitizers.gni")
@@ -11,13 +13,11 @@ if (is_ios) {
   import("//build/config/ios/ios_sdk.gni")
 }
 
-# Contains the dependencies needed for sanitizers to link into executables and
-# shared_libraries. Unconditionally depend upon this target as it is empty if
-# |is_asan|, |is_lsan|, |is_tsan|, |is_msan| and |use_custom_libcxx| are false.
+# Contains the dependencies needed for sanitizers to link into
+# executables and shared_libraries. Unconditionally depend upon
+# "//build/config:exe_and_shlib_deps" to pull in this target.
 group("deps") {
-  public_deps = [
-    ":deps_no_options",
-  ]
+  visibility = [ "//build/config:exe_and_shlib_deps" ]
   if (using_sanitizer) {
     public_configs = [
       ":sanitizer_options_link_helper",
@@ -30,44 +30,18 @@ group("deps") {
     deps = [
       ":options_sources",
     ]
-  }
-  if (use_afl) {
-    deps += [ "//third_party/afl" ]
-  }
-}
-
-group("deps_no_options") {
-  if (using_sanitizer) {
-    public_configs = [
-      # Even when a target removes default_sanitizer_flags, it may be depending
-      # on a library that did not remove default_sanitizer_flags. Thus, we need
-      # to add the ldflags here as well as in default_sanitizer_flags.
-      ":default_sanitizer_ldflags",
-    ]
-    deps = []
-    public_deps = []
-
-    data = [
-      "//tools/valgrind/asan/",
-    ]
     if (is_win) {
       exe = ".exe"
     } else {
       exe = ""
     }
-    data += [ "$clang_base_path/bin/llvm-symbolizer${exe}" ]
-    if (is_linux) {
-      # llvm-symbolizer needs this.
-      data += [ "$clang_base_path/lib/libstdc++.so.6" ]
-    }
-
+    data = [
+      "//tools/valgrind/asan/",
+      "$clang_base_path/bin/llvm-symbolizer${exe}",
+    ]
     if (use_prebuilt_instrumented_libraries ||
         use_locally_built_instrumented_libraries) {
       deps += [ "//third_party/instrumented_libraries:deps" ]
-    }
-    if (use_custom_libcxx) {
-      public_deps += [ "//buildtools/third_party/libc++:libcxx_proxy" ]
-      data += [ "$root_out_dir/libc++.so" ]
     }
 
     # ASAN is supported on iOS but the runtime library depends on the compiler
@@ -79,7 +53,9 @@ group("deps_no_options") {
       ]
     }
     if (is_mac || (is_ios && !use_xcode_clang)) {
-      public_deps += [ ":asan_runtime_bundle_data" ]
+      public_deps = [
+        ":asan_runtime_bundle_data",
+      ]
     }
   }
 }
@@ -194,10 +170,16 @@ config("default_sanitizer_ldflags") {
     ":deps",
   ]
 
-  if (is_posix) {
+  if (is_posix || is_fuchsia) {
     ldflags = []
     if (is_asan) {
       ldflags += [ "-fsanitize=address" ]
+      if (is_mac) {
+        # https://crbug.com/708707
+        ldflags += [ "-fno-sanitize-address-use-after-scope" ]
+      } else {
+        ldflags += [ "-fsanitize-address-use-after-scope" ]
+      }
     }
     if (is_lsan) {
       ldflags += [ "-fsanitize=leak" ]
@@ -222,7 +204,7 @@ config("default_sanitizer_ldflags") {
       ldflags += [ "-fsanitize-coverage=$sanitizer_coverage_flags" ]
     }
 
-    if (is_cfi && !is_nacl) {
+    if (is_cfi && current_toolchain == default_toolchain) {
       ldflags += [ "-fsanitize=cfi-vcall" ]
       if (use_cfi_cast) {
         ldflags += [
@@ -230,11 +212,14 @@ config("default_sanitizer_ldflags") {
           "-fsanitize=cfi-unrelated-cast",
         ]
       }
+      if (use_cfi_icall) {
+        ldflags += [ "-fsanitize=cfi-icall" ]
+      }
       if (use_cfi_diag) {
-        ldflags += [
-          "-fno-sanitize-trap=cfi",
-          "-fsanitize-recover=cfi",
-        ]
+        ldflags += [ "-fno-sanitize-trap=cfi" ]
+        if (use_cfi_recover) {
+          ldflags += [ "-fsanitize-recover=cfi" ]
+        }
       }
     }
   } else if (is_win && is_asan) {
@@ -244,9 +229,8 @@ config("default_sanitizer_ldflags") {
     # and dlls, see link_executable and link_shared_library below.
     # This here handles only the component build.
     if (target_cpu == "x64") {
-      # Windows 64-bit. TODO(etienneb): Remove the assert when this is ready.
+      # Windows 64-bit.
       if (is_component_build) {
-        assert(false, "win/asan does not work in 64-bit yet")
         libs = [
           "clang_rt.asan_dynamic-x86_64.lib",
           "clang_rt.asan_dynamic_runtime_thunk-x86_64.lib",
@@ -266,40 +250,28 @@ config("default_sanitizer_ldflags") {
 
 config("common_sanitizer_flags") {
   cflags = []
-  cflags_cc = []
 
   # Sanitizers need line table info for stack traces. They don't need type info
-  # or variable info, so we can leave that out to speed up the build.
+  # or variable info, so we can leave that out to speed up the build (unless
+  # it's explicitly asked for by setting |sanitizer_keep_symbols| to true).
   if (using_sanitizer) {
     assert(is_clang, "sanitizers only supported with clang")
-    cflags += [
-      "-gline-tables-only",
+    assert(!is_official_build, "sanitizers not supported in official builds")
 
-      # Column info in debug data confuses Visual Studio's debugger, so don't
-      # use this by default.  However, clusterfuzz needs it for good attribution
-      # of reports to CLs, so turn it on there.
-      "-gcolumn-info",
-    ]
-  }
+    if (!sanitizer_no_symbols) {
+      if (!sanitizer_keep_symbols) {
+        cflags += [ "-gline-tables-only" ]
+      }
 
-  # Common options for AddressSanitizer, LeakSanitizer, ThreadSanitizer,
-  # MemorySanitizer and non-official CFI builds.
-  if (using_sanitizer || (is_cfi && !is_official_build)) {
-    if (is_posix) {
-      cflags += [ "-fno-omit-frame-pointer" ]
-    } else {
-      cflags += [ "/Oy-" ]
+      cflags += [
+        # Column info in debug data confuses Visual Studio's debugger, so don't
+        # use this by default.  However, clusterfuzz needs it for good
+        # attribution of reports to CLs, so turn it on there.
+        "-gcolumn-info",
+      ]
     }
-  }
 
-  if (use_custom_libcxx) {
-    prefix = "//buildtools/third_party"
-    include = "trunk/include"
-    cflags_cc += [
-      "-nostdinc++",
-      "-isystem" + rebase_path("$prefix/libc++/$include", root_build_dir),
-      "-isystem" + rebase_path("$prefix/libc++abi/$include", root_build_dir),
-    ]
+    # Frame pointers are controlled in //build/config/compiler:default_stack_frames
   }
 }
 
@@ -307,6 +279,12 @@ config("asan_flags") {
   cflags = []
   if (is_asan) {
     cflags += [ "-fsanitize=address" ]
+    if (!is_mac) {
+      cflags += [ "-fsanitize-address-use-after-scope" ]
+    } else {
+      # https://crbug.com/708707
+      cflags += [ "-fno-sanitize-address-use-after-scope" ]
+    }
     if (!asan_globals) {
       cflags += [
         "-mllvm",
@@ -333,12 +311,22 @@ config("asan_flags") {
 config("link_executable") {
   if (is_asan && is_win && !is_component_build) {
     if (target_cpu == "x64") {
-      # Windows 64-bit. TODO(etienneb): Remove the assert when this is ready.
-      assert(false, "win/asan does not work in 64-bit yet")
       libs = [ "clang_rt.asan-x86_64.lib" ]
+      ldflags = [
+        "-wholearchive:clang_rt.asan-x86_64.lib",
+        "-include:__asan_get_free_stack",
+      ]
     } else {
       assert(target_cpu == "x86", "WinASan unsupported architecture")
       libs = [ "clang_rt.asan-i386.lib" ]
+      ldflags = [
+        "-wholearchive:clang_rt.asan-i386.lib",
+
+        # TODO(crbug.com/777087): The linker in VS 15.4 does not respect
+        # /wholearchive. This manually includes a symbol to work around that.
+        # We can remove it when the linker is fixed.
+        "-include:___asan_get_free_stack",
+      ]
     }
   }
 }
@@ -346,8 +334,6 @@ config("link_executable") {
 config("link_shared_library") {
   if (is_asan && is_win && !is_component_build) {
     if (target_cpu == "x64") {
-      # Windows 64-bit. TODO(etienneb): Remove the assert when this is ready.
-      assert(false, "win/asan does not work in 64-bit yet")
       libs = [ "clang_rt.asan_dll_thunk-x86_64.lib" ]
     } else {
       assert(target_cpu == "x86", "WinASan unsupported architecture")
@@ -358,7 +344,7 @@ config("link_shared_library") {
 
 config("cfi_flags") {
   cflags = []
-  if (is_cfi && !is_nacl) {
+  if (is_cfi && current_toolchain == default_toolchain) {
     if (!defined(cfi_blacklist_path)) {
       cfi_blacklist_path =
           rebase_path("//tools/cfi/blacklist.txt", root_build_dir)
@@ -375,24 +361,42 @@ config("cfi_flags") {
       ]
     }
 
-    if (use_cfi_diag) {
-      cflags += [
-        "-fno-sanitize-trap=cfi",
-        "-fsanitize-recover=cfi",
-        "-fno-inline-functions",
-        "-fno-inline",
-        "-fno-omit-frame-pointer",
-        "-O1",
-      ]
-    } else {
-      defines = [ "CFI_ENFORCEMENT" ]
+    if (use_cfi_icall) {
+      cflags += [ "-fsanitize=cfi-icall" ]
     }
+
+    if (use_cfi_diag) {
+      cflags += [ "-fno-sanitize-trap=cfi" ]
+      if (is_win) {
+        cflags += [
+          "/Oy-",
+          "/Ob0",
+        ]
+      } else {
+        cflags += [
+          "-fno-inline-functions",
+          "-fno-inline",
+          "-fno-omit-frame-pointer",
+          "-O1",
+        ]
+      }
+      if (use_cfi_recover) {
+        cflags += [ "-fsanitize-recover=cfi" ]
+      }
+    }
+  }
+}
+
+# crbug.com/785442: Fix cfi-icall failures for code that casts pointer argument
+# types in function pointer type signatures.
+config("cfi_icall_generalize_pointers") {
+  if (is_clang && is_cfi && use_cfi_icall) {
+    cflags = [ "-fsanitize-cfi-icall-generalize-pointers" ]
   }
 }
 
 config("coverage_flags") {
   cflags = []
-
   if (use_sanitizer_coverage) {
     cflags += [
       "-fsanitize-coverage=$sanitizer_coverage_flags",
@@ -460,6 +464,7 @@ config("ubsan_flags") {
       "-fsanitize=integer-divide-by-zero",
       "-fsanitize=null",
       "-fsanitize=object-size",
+      "-fsanitize=pointer-overflow",
       "-fsanitize=return",
       "-fsanitize=returns-nonnull-attribute",
       "-fsanitize=shift-exponent",
@@ -501,7 +506,12 @@ config("ubsan_security_flags") {
           rebase_path("//tools/ubsan/security_blacklist.txt", root_build_dir)
     }
     cflags = [
-      "-fsanitize=signed-integer-overflow,shift,vptr,function,vla-bound",
+      "-fsanitize=function",
+      "-fsanitize=pointer-overflow",
+      "-fsanitize=shift",
+      "-fsanitize=signed-integer-overflow",
+      "-fsanitize=vla-bound",
+      "-fsanitize=vptr",
       "-fsanitize-blacklist=$ubsan_security_blacklist_path",
     ]
   }
@@ -526,6 +536,12 @@ config("ubsan_vptr_flags") {
   }
 }
 
+config("fuzzing_build_mode") {
+  if (use_fuzzing_engine) {
+    defines = [ "FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION" ]
+  }
+}
+
 all_sanitizer_configs = [
   ":common_sanitizer_flags",
   ":coverage_flags",
@@ -540,6 +556,7 @@ all_sanitizer_configs = [
   ":ubsan_null_flags",
   ":ubsan_security_flags",
   ":ubsan_vptr_flags",
+  ":fuzzing_build_mode",
 ]
 
 # This config is applied by default to all targets. It sets the compiler flags
@@ -564,4 +581,34 @@ config("default_sanitizer_flags_but_ubsan_vptr") {
 
 config("default_sanitizer_flags_but_coverage") {
   configs = all_sanitizer_configs - [ ":coverage_flags" ]
+}
+
+# This config is used by parts of code that aren't targeted in fuzzers and
+# therefore don't need coverage instrumentation and possibly wont need
+# sanitizer instrumentation either. The config also tells the compiler to
+# perform additional optimizations on the configured code and ensures that
+# linking it to the rest of the binary which is instrumented with sanitizers
+# works. The config only does anything if the build is a fuzzing build.
+config("not_fuzzed") {
+  if (use_fuzzing_engine) {
+    # Since we aren't instrumenting with coverage, code size is less of a
+    # concern, so use a more aggressive optimization level than
+    # optimize_for_fuzzing (-O1). When given multiple optimization flags, clang
+    # obeys the last one, so as long as this flag comes after -O1, it should work.
+    # Since this config will always be depended on after
+    # "//build/config/compiler:default_optimization" (which adds -O1 when
+    # optimize_for_fuzzing is true), -O2 should always be the second flag. Even
+    # though this sounds fragile, it isn't a big deal if it breaks, since proto
+    # fuzzers will still work, they will just be slightly slower.
+    cflags = [ "-O2" ]
+
+    # We need to include this config when we remove default_sanitizer_flags or
+    # else there will be linking errors. We would remove default_sanitizer_flags
+    # here as well, but gn doesn't permit this.
+    if (!is_msan) {
+      # We don't actually remove sanitization when MSan is being used so there
+      # is no need to add default_sanitizer_ldflags in that case
+      configs = [ ":default_sanitizer_ldflags" ]
+    }
+  }
 }

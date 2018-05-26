@@ -81,7 +81,6 @@ class TestShard(object):
 
   def _TestSetUp(self, test):
     if (self._test_instance.collect_chartjson_data
-        or self._test_instance.collect_json_data
         or self._tests[test].get('archive_output_dir')):
       self._output_dir = tempfile.mkdtemp()
 
@@ -108,9 +107,6 @@ class TestShard(object):
       end_time = time.time()
       chart_json_output = self._test_instance.ReadChartjsonOutput(
           self._output_dir)
-      json_output = ''
-      if self._test_instance.collect_json_data:
-        json_output = self._test_instance.ReadJsonOutput(self._output_dir)
       if exit_code == 0:
         result_type = base_test_result.ResultType.PASS
       else:
@@ -120,11 +116,9 @@ class TestShard(object):
       exit_code = -1
       output = e.output
       chart_json_output = ''
-      json_output = ''
       result_type = base_test_result.ResultType.TIMEOUT
     return self._ProcessTestResult(test, cmd, start_time, end_time, exit_code,
-                                   output, chart_json_output, json_output,
-                                   result_type)
+                                   output, chart_json_output, result_type)
 
   def _CreateCmd(self, test):
     cmd = []
@@ -133,8 +127,6 @@ class TestShard(object):
     cmd.append(self._tests[test]['cmd'])
     if self._output_dir:
       cmd.append('--output-dir=%s' % self._output_dir)
-    if self._test_instance.collect_json_data:
-      cmd.append('--output-format=json')
     return ' '.join(self._ExtendCmd(cmd))
 
   def _ExtendCmd(self, cmd): # pylint: disable=no-self-use
@@ -151,16 +143,12 @@ class TestShard(object):
     raise NotImplementedError
 
   def _ProcessTestResult(self, test, cmd, start_time, end_time, exit_code,
-                         output, chart_json_output, json_output, result_type):
+                         output, chart_json_output, result_type):
     if exit_code is None:
       exit_code = -1
 
     self._LogTestExit(test, exit_code, end_time - start_time)
 
-    actual_exit_code = exit_code
-    if (self._test_instance.flaky_steps
-        and test in self._test_instance.flaky_steps):
-      exit_code = 0
     archive_bytes = (self._ArchiveOutputDir()
                      if self._tests[test].get('archive_output_dir')
                      else None)
@@ -168,10 +156,8 @@ class TestShard(object):
         'name': test,
         'output': [output],
         'chartjson': chart_json_output,
-        'json': json_output,
         'archive_bytes': archive_bytes,
         'exit_code': exit_code,
-        'actual_exit_code': actual_exit_code,
         'result_type': result_type,
         'start_time': start_time,
         'end_time': end_time,
@@ -206,10 +192,10 @@ class TestShard(object):
     pickled = os.path.join(constants.PERF_OUTPUT_DIR, result['name'])
     if os.path.exists(pickled):
       with file(pickled, 'r') as f:
-        previous = pickle.loads(f.read())
+        previous = pickle.load(f)
         result['output'] = previous['output'] + result['output']
     with file(pickled, 'w') as f:
-      f.write(pickle.dumps(result))
+      pickle.dump(result, f)
 
   def _TestTearDown(self):
     if self._output_dir:
@@ -245,7 +231,8 @@ class DeviceTestShard(TestShard):
           result_type = self._RunSingleTest(test)
         except device_errors.CommandTimeoutError:
           result_type = base_test_result.ResultType.TIMEOUT
-        except device_errors.CommandFailedError:
+        except (device_errors.CommandFailedError,
+                device_errors.DeviceUnreachableError):
           logging.exception('Exception when executing %s.', test)
           result_type = base_test_result.ResultType.FAIL
         finally:
@@ -265,6 +252,7 @@ class DeviceTestShard(TestShard):
     logging.info('%s : exit_code=%d in %d secs on device %s',
                  test, exit_code, duration, str(self._device))
 
+  @trace_event.traced
   def _TestSetUp(self, test):
     if not self._device.IsOnline():
       msg = 'Device %s is unresponsive.' % str(self._device)
@@ -298,6 +286,7 @@ class DeviceTestShard(TestShard):
     persisted_result['host_test'] = False
     persisted_result['device'] = str(self._device)
 
+  @trace_event.traced
   def _TestTearDown(self):
     try:
       logging.info('Unmapping device ports for %s.', self._device)
@@ -455,16 +444,12 @@ class LocalDevicePerfTestRun(local_device_test_run.LocalDeviceTestRun):
           device_shard_helper)
       return [x for x in shards.pGet(self._timeout) if x is not None]
 
-    # Run the tests.
-    with contextlib_ext.Optional(
-        self._env.Tracing(),
-        self._env.trace_output):
-      # Affinitize the tests.
-      self._SplitTestsByAffinity()
-      if not self._test_buckets and not self._no_device_tests:
-        raise local_device_test_run.NoTestsError()
-      host_test_results, device_test_results = reraiser_thread.RunAsync(
-          [run_no_devices_tests, run_devices_tests])
+    # Affinitize the tests.
+    self._SplitTestsByAffinity()
+    if not self._test_buckets and not self._no_device_tests:
+      raise local_device_test_run.NoTestsError()
+    host_test_results, device_test_results = reraiser_thread.RunAsync(
+        [run_no_devices_tests, run_devices_tests])
 
     return host_test_results + device_test_results
 

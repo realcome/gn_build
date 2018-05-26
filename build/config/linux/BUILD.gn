@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/c++/c++.gni")
 import("//build/config/linux/pkg_config.gni")
 import("//build/config/ui.gni")
 
@@ -25,11 +26,11 @@ config("runtime_library") {
   if (is_chromeos) {
     defines = [ "OS_CHROMEOS" ]
   }
-}
 
-config("fontconfig") {
-  visibility = [ "//build/linux:fontconfig" ]
-  libs = [ "fontconfig" ]
+  if ((!is_chromeos || default_toolchain != "//build/toolchain/cros:target") &&
+      (!use_custom_libcxx || current_cpu == "mipsel")) {
+    libs = [ "atomic" ]
+  }
 }
 
 config("x11") {
@@ -91,6 +92,10 @@ if (use_glib) {
       "gmodule-2.0",
       "gobject-2.0",
       "gthread-2.0",
+    ]
+    defines = [
+      "GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_32",
+      "GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_26",
     ]
   }
 }

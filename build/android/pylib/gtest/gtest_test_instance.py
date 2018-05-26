@@ -15,6 +15,7 @@ from pylib import constants
 from pylib.constants import host_paths
 from pylib.base import base_test_result
 from pylib.base import test_instance
+from pylib.symbols import stack_symbolizer
 
 with host_paths.SysPath(host_paths.BUILD_COMMON_PATH):
   import unittest_util # pylint: disable=import-error
@@ -30,9 +31,8 @@ RUN_IN_SUB_THREAD_TEST_SUITES = [
   'base_unittests',  # file_locking_unittest.cc uses a child process.
   'ipc_perftests',
   'ipc_tests',
-  'mojo_message_pipe_perftests',
-  'mojo_public_bindings_perftests',
-  'mojo_system_unittests',
+  'mojo_perftests',
+  'mojo_unittests',
   'net_unittests'
 ]
 
@@ -85,6 +85,9 @@ _RE_TEST_CURRENTLY_RUNNING = re.compile(r'\[ERROR:.*?\]'
 _RE_DISABLED = re.compile(r'DISABLED_')
 _RE_FLAKY = re.compile(r'FLAKY_')
 
+# Detect stack line in stdout.
+_STACK_LINE_RE = re.compile(r'\s*#\d+')
+
 def ParseGTestListTests(raw_list):
   """Parses a raw test list as provided by --gtest_list_tests.
 
@@ -120,30 +123,42 @@ def ParseGTestListTests(raw_list):
   return ret
 
 
-def ParseGTestOutput(output):
+def ParseGTestOutput(output, symbolizer, device_abi):
   """Parses raw gtest output and returns a list of results.
 
   Args:
     output: A list of output lines.
+    symbolizer: The symbolizer used to symbolize stack.
+    device_abi: Device abi that is needed for symbolization.
   Returns:
     A list of base_test_result.BaseTestResults.
   """
   duration = 0
   fallback_result_type = None
   log = []
+  stack = []
   result_type = None
   results = []
   test_name = None
 
+  def symbolize_stack_and_merge_with_log():
+    log_string = '\n'.join(log or [])
+    if not stack:
+      stack_string = ''
+    else:
+      stack_string = '\n'.join(
+          symbolizer.ExtractAndResolveNativeStackTraces(
+              stack, device_abi))
+    return '%s\n%s' % (log_string, stack_string)
+
   def handle_possibly_unknown_test():
     if test_name is not None:
       results.append(base_test_result.BaseTestResult(
-          test_name,
+          TestNameWithoutDisabledPrefix(test_name),
           fallback_result_type or base_test_result.ResultType.UNKNOWN,
-          duration, log=('\n'.join(log) if log else '')))
+          duration, log=symbolize_stack_and_merge_with_log()))
 
   for l in output:
-    logging.info(l)
     matcher = _RE_TEST_STATUS.match(l)
     if matcher:
       if matcher.group(1) == 'RUN':
@@ -151,6 +166,7 @@ def ParseGTestOutput(output):
         duration = 0
         fallback_result_type = None
         log = []
+        stack = []
         result_type = None
       elif matcher.group(1) == 'OK':
         result_type = base_test_result.ResultType.PASS
@@ -171,12 +187,18 @@ def ParseGTestOutput(output):
         duration = 0 # Don't know.
 
     if log is not None:
-      log.append(l)
+      if not matcher and _STACK_LINE_RE.match(l):
+        stack.append(l)
+      else:
+        log.append(l)
 
     if result_type and test_name:
+      # Don't bother symbolizing output if the test passed.
+      if result_type == base_test_result.ResultType.PASS:
+        stack = []
       results.append(base_test_result.BaseTestResult(
-          test_name, result_type, duration,
-          log=('\n'.join(log) if log else '')))
+          TestNameWithoutDisabledPrefix(test_name), result_type, duration,
+          log=symbolize_stack_and_merge_with_log()))
       test_name = None
 
   handle_possibly_unknown_test()
@@ -187,10 +209,11 @@ def ParseGTestOutput(output):
 def ParseGTestXML(xml_content):
   """Parse gtest XML result."""
   results = []
+  if not xml_content:
+    return results
 
   html = HTMLParser.HTMLParser()
 
-  # TODO(jbudorick): Unclear how this handles crashes.
   testsuites = xml.etree.ElementTree.fromstring(xml_content)
   for testsuite in testsuites:
     suite_name = testsuite.attrib['name']
@@ -203,7 +226,7 @@ def ParseGTestXML(xml_content):
         log.append(html.unescape(failure.attrib['message']))
 
       results.append(base_test_result.BaseTestResult(
-          '%s.%s' % (suite_name, case_name),
+          '%s.%s' % (suite_name, TestNameWithoutDisabledPrefix(case_name)),
           result_type,
           int(float(testcase.attrib['time']) * 1000),
           log=('\n'.join(log) if log else '')))
@@ -226,9 +249,9 @@ def ConvertTestFilterFileIntoGTestFilterArgument(input_lines):
   Returns:
     a string suitable for feeding as an argument of --gtest_filter parameter.
   """
-  # Strip whitespace + skip empty lines and lines beginning with '#'.
-  stripped_lines = (l.strip() for l in input_lines)
-  filter_lines = list(l for l in stripped_lines if l and l[0] != '#')
+  # Strip comments and whitespace from each line and filter non-empty lines.
+  stripped_lines = (l.split('#', 1)[0].strip() for l in input_lines)
+  filter_lines = list(l for l in stripped_lines if l)
 
   # Split the tests into positive and negative patterns (gtest treats
   # every pattern after the first '-' sign as an exclusion).
@@ -261,12 +284,19 @@ class GtestTestInstance(test_instance.TestInstance):
     # TODO(jbudorick): Support multiple test suites.
     if len(args.suite_name) > 1:
       raise ValueError('Platform mode currently supports only 1 gtest suite')
+    self._isolated_script_test_perf_output = (
+        args.isolated_script_test_perf_output)
     self._exe_dist_dir = None
+    self._external_shard_index = args.test_launcher_shard_index
     self._extract_test_list_from_filter = args.extract_test_list_from_filter
+    self._filter_tests_lock = threading.Lock()
+    self._gs_test_artifacts_bucket = args.gs_test_artifacts_bucket
     self._shard_timeout = args.shard_timeout
     self._store_tombstones = args.store_tombstones
     self._suite = args.suite_name[0]
-    self._filter_tests_lock = threading.Lock()
+    self._symbolizer = stack_symbolizer.Symbolizer(None, False)
+    self._total_external_shards = args.test_launcher_total_shards
+    self._wait_for_java_debugger = args.wait_for_java_debugger
 
     # GYP:
     if args.executable_dist_dir:
@@ -280,14 +310,14 @@ class GtestTestInstance(test_instance.TestInstance):
         self._exe_dist_dir = exe_dist_dir
 
     incremental_part = ''
-    if args.test_apk_incremental_install_script:
+    if args.test_apk_incremental_install_json:
       incremental_part = '_incremental'
 
     apk_path = os.path.join(
         constants.GetOutDirectory(), '%s_apk' % self._suite,
         '%s-debug%s.apk' % (self._suite, incremental_part))
-    self._test_apk_incremental_install_script = (
-        args.test_apk_incremental_install_script)
+    self._test_apk_incremental_install_json = (
+        args.test_apk_incremental_install_json)
     if not os.path.exists(apk_path):
       self._apk_helper = None
     else:
@@ -301,6 +331,8 @@ class GtestTestInstance(test_instance.TestInstance):
         self._extras[_EXTRA_SHARD_SIZE_LIMIT] = 1
         self._extras[EXTRA_SHARD_NANO_TIMEOUT] = int(1e9 * self._shard_timeout)
         self._shard_timeout = 10 * self._shard_timeout
+      if args.wait_for_java_debugger:
+        self._extras[EXTRA_SHARD_NANO_TIMEOUT] = int(1e15)  # Forever
 
     if not self._apk_helper and not self._exe_dist_dir:
       error_func('Could not find apk or executable for %s' % self._suite)
@@ -332,10 +364,22 @@ class GtestTestInstance(test_instance.TestInstance):
       self._app_data_files = None
       self._app_data_file_dir = None
 
-    self._test_arguments = args.test_arguments
+    self._flags = None
+    self._initializeCommandLineFlags(args)
 
     # TODO(jbudorick): Remove this once it's deployed.
     self._enable_xml_result_parsing = args.enable_xml_result_parsing
+
+  def _initializeCommandLineFlags(self, args):
+    self._flags = []
+    if args.command_line_flags:
+      self._flags.extend(args.command_line_flags)
+    if args.device_flags_file:
+      with open(args.device_flags_file) as f:
+        stripped_lines = (l.strip() for l in f)
+        self._flags.extend(flag for flag in stripped_lines if flag)
+    if args.run_disabled:
+      self._flags.append('--gtest_also_run_disabled_tests')
 
   @property
   def activity(self):
@@ -366,16 +410,32 @@ class GtestTestInstance(test_instance.TestInstance):
     return self._exe_dist_dir
 
   @property
+  def external_shard_index(self):
+    return self._external_shard_index
+
+  @property
+  def extract_test_list_from_filter(self):
+    return self._extract_test_list_from_filter
+
+  @property
   def extras(self):
     return self._extras
 
   @property
-  def gtest_also_run_disabled_tests(self):
-    return self._run_disabled
+  def flags(self):
+    return self._flags
+
+  @property
+  def gs_test_artifacts_bucket(self):
+    return self._gs_test_artifacts_bucket
 
   @property
   def gtest_filter(self):
     return self._gtest_filter
+
+  @property
+  def isolated_script_test_perf_output(self):
+    return self._isolated_script_test_perf_output
 
   @property
   def package(self):
@@ -402,16 +462,20 @@ class GtestTestInstance(test_instance.TestInstance):
     return self._suite
 
   @property
-  def test_apk_incremental_install_script(self):
-    return self._test_apk_incremental_install_script
+  def symbolizer(self):
+    return self._symbolizer
 
   @property
-  def test_arguments(self):
-    return self._test_arguments
+  def test_apk_incremental_install_json(self):
+    return self._test_apk_incremental_install_json
 
   @property
-  def extract_test_list_from_filter(self):
-    return self._extract_test_list_from_filter
+  def total_external_shards(self):
+    return self._total_external_shards
+
+  @property
+  def wait_for_java_debugger(self):
+    return self._wait_for_java_debugger
 
   #override
   def TestType(self):

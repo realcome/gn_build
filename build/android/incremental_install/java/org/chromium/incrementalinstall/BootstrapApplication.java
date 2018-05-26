@@ -6,13 +6,14 @@ package org.chromium.incrementalinstall;
 
 import android.app.Application;
 import android.app.Instrumentation;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.Bundle;
 import android.util.Log;
+
+import dalvik.system.DexFile;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
@@ -32,8 +33,10 @@ public final class BootstrapApplication extends Application {
     private static final String TAG = "cr.incrementalinstall";
     private static final String MANAGED_DIR_PREFIX = "/data/local/tmp/incremental-app-";
     private static final String REAL_APP_META_DATA_NAME = "incremental-install-real-app";
-    private static final String REAL_INSTRUMENTATION_META_DATA_NAME =
-            "incremental-install-real-instrumentation";
+    private static final String REAL_INSTRUMENTATION_META_DATA_NAME0 =
+            "incremental-install-real-instrumentation-0";
+    private static final String REAL_INSTRUMENTATION_META_DATA_NAME1 =
+            "incremental-install-real-instrumentation-1";
 
     private ClassLoaderPatcher mClassLoaderPatcher;
     private Application mRealApplication;
@@ -41,6 +44,7 @@ public final class BootstrapApplication extends Application {
     private Instrumentation mRealInstrumentation;
     private Object mStashedProviderList;
     private Object mActivityThread;
+    public static DexFile[] sIncrementalDexFiles; // Needed by junit test runner.
 
     @Override
     protected void attachBaseContext(Context context) {
@@ -78,7 +82,7 @@ public final class BootstrapApplication extends Application {
             File instLibDir = new File(instIncrementalRootDir, "lib");
             File instDexDir = new File(instIncrementalRootDir, "dex");
             File instInstallLockFile = new File(instIncrementalRootDir, "install.lock");
-            File instFirstRunLockFile = new File(instIncrementalRootDir , "firstrun.lock");
+            File instFirstRunLockFile = new File(instIncrementalRootDir, "firstrun.lock");
 
             boolean isFirstRun = LockFile.installerLockExists(appFirstRunLockFile)
                     || (instPackageNameDiffers
@@ -97,7 +101,7 @@ public final class BootstrapApplication extends Application {
             }
 
             mClassLoaderPatcher.importNativeLibs(instLibDir);
-            mClassLoaderPatcher.loadDexFiles(instDexDir);
+            sIncrementalDexFiles = mClassLoaderPatcher.loadDexFiles(instDexDir);
             if (instPackageNameDiffers) {
                 mClassLoaderPatcher.importNativeLibs(appLibDir);
                 mClassLoaderPatcher.loadDexFiles(appDexDir);
@@ -113,9 +117,11 @@ public final class BootstrapApplication extends Application {
             // mInstrumentationAppDir is one of a set of fields that is initialized only when
             // instrumentation is active.
             if (Reflect.getField(mActivityThread, "mInstrumentationAppDir") != null) {
-                String realInstrumentationName =
-                        getClassNameFromMetadata(REAL_INSTRUMENTATION_META_DATA_NAME, instContext);
-                initInstrumentation(realInstrumentationName);
+                String metaDataName = REAL_INSTRUMENTATION_META_DATA_NAME0;
+                if (mOrigInstrumentation instanceof SecondInstrumentation) {
+                    metaDataName = REAL_INSTRUMENTATION_META_DATA_NAME1;
+                }
+                initInstrumentation(getClassNameFromMetadata(metaDataName, instContext));
             } else {
                 Log.i(TAG, "No instrumentation active.");
             }
@@ -183,16 +189,12 @@ public final class BootstrapApplication extends Application {
                 Class.forName(realInstrumentationName));
 
         // Initialize the fields that are set by Instrumentation.init().
-        String[] initFields = {"mThread", "mMessageQueue", "mInstrContext", "mAppContext",
-                "mWatcher", "mUiAutomationConnection"};
+        String[] initFields = {"mAppContext", "mComponent", "mInstrContext", "mMessageQueue",
+                "mThread", "mUiAutomationConnection", "mWatcher"};
         for (String fieldName : initFields) {
             Reflect.setField(mRealInstrumentation, fieldName,
                     Reflect.getField(mOrigInstrumentation, fieldName));
         }
-        // But make sure the correct ComponentName is used.
-        ComponentName newName = new ComponentName(
-                mOrigInstrumentation.getComponentName().getPackageName(), realInstrumentationName);
-        Reflect.setField(mRealInstrumentation, "mComponent", newName);
     }
 
     /**
@@ -267,7 +269,12 @@ public final class BootstrapApplication extends Application {
             }
         }
 
-        for (String fieldName : new String[] { "mPackages", "mResourcePackages" }) {
+        // Contains a reference to BootstrapApplication and will cause BroadCastReceivers to fail
+        // if not replaced.
+        Object contextWrapperBase = Reflect.getField(mRealApplication, "mBase");
+        Reflect.setField(contextWrapperBase, "mOuterContext", mRealApplication);
+
+        for (String fieldName : new String[] {"mPackages", "mResourcePackages"}) {
             Map<String, WeakReference<?>> packageMap =
                     (Map<String, WeakReference<?>>) Reflect.getField(mActivityThread, fieldName);
             for (Map.Entry<String, WeakReference<?>> entry : packageMap.entrySet()) {

@@ -11,11 +11,20 @@ directory.
 A landmine is tripped when a builder checks out a different revision, and the
 diff between the new landmines and the old ones is non-null. At this point, the
 build is clobbered.
+
+Before adding or changing a landmine consider the consequences of doing so.
+Doing so will wipe out every output directory on every Chrome developer's
+machine. This can be particularly problematic on Windows where the directory
+deletion may well fail (locked files, command prompt in the directory, etc.),
+and generated .sln and .vcxproj files will be deleted.
+
+This output directory deletion will be repated when going back and forth across
+the change that added the landmine, adding to the cost. There are usually less
+troublesome alternatives.
 """
 
 import difflib
 import errno
-import gyp_environment
 import logging
 import optparse
 import os
@@ -42,7 +51,7 @@ def get_build_dir(src_dir):
     if not output_dir:
       raise Error('CHROMIUM_OUT_DIR environment variable is set but blank!')
   else:
-    output_dir = landmine_utils.gyp_generator_flags().get('output_dir', 'out')
+    output_dir = 'out'
   return os.path.abspath(os.path.join(src_dir, output_dir))
 
 
@@ -121,8 +130,6 @@ def process_options():
 
 def main():
   options = process_options()
-
-  gyp_environment.SetEnvironment()
 
   landmines = []
   for s in options.landmine_scripts:

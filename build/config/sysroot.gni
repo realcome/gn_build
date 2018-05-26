@@ -5,77 +5,49 @@
 # This header file defines the "sysroot" variable which is the absolute path
 # of the sysroot. If no sysroot applies, the variable will be an empty string.
 
+import("//build/config/chrome_build.gni")
+
 declare_args() {
   # The absolute path of the sysroot that is applied when compiling using
   # the target toolchain.
   target_sysroot = ""
 
-  # The absolute path to directory containing sysroots for linux 32 and 64bit
-  target_sysroot_dir = ""
+  # The absolute path to directory containing linux sysroot images
+  target_sysroot_dir = "//build/linux"
 
-  use_sysroot = true
+  use_sysroot = current_cpu == "x86" || current_cpu == "x64" ||
+                current_cpu == "arm" || current_cpu == "arm64" ||
+                current_cpu == "mipsel" || current_cpu == "mips64el"
 }
 
-if (is_linux && target_sysroot_dir != "") {
-  if (current_cpu == "x64") {
-    sysroot = target_sysroot_dir + "/wheezy-x64"
-  } else if (current_cpu == "x86") {
-    sysroot = target_sysroot_dir + "/wheezy-ia32"
-  }
-} else if (current_os == target_os && current_cpu == target_cpu &&
-           target_sysroot != "") {
+if (current_os == target_os && current_cpu == target_cpu &&
+    target_sysroot != "") {
   sysroot = target_sysroot
 } else if (is_android) {
   import("//build/config/android/config.gni")
-  if (current_cpu == "x86") {
-    sysroot = "$android_ndk_root/$x86_android_sysroot_subdir"
-  } else if (current_cpu == "arm") {
-    sysroot = "$android_ndk_root/$arm_android_sysroot_subdir"
-  } else if (current_cpu == "mipsel") {
-    sysroot = "$android_ndk_root/$mips_android_sysroot_subdir"
-  } else if (current_cpu == "x64") {
-    sysroot = "$android_ndk_root/$x86_64_android_sysroot_subdir"
-  } else if (current_cpu == "arm64") {
-    sysroot = "$android_ndk_root/$arm64_android_sysroot_subdir"
-  } else if (current_cpu == "mips64el") {
-    sysroot = "$android_ndk_root/$mips64_android_sysroot_subdir"
-  } else {
-    sysroot = ""
-  }
+
+  # Android uses unified headers, and thus a single compile time sysroot
+  sysroot = "$android_ndk_root/sysroot"
 } else if (is_linux && use_sysroot) {
   # By default build against a sysroot image downloaded from Cloud Storage
   # during gclient runhooks.
-  if (is_chromeos) {
-    # Regular ChromeOS builds use custom sysroots, but desktop ChromeOS (where
-    # we're building linux desktop binaries but using the ChromeOS UI and
-    # functionality where possible) needs to run on the buliders, which are
-    # running precise.  The precise build has a different set of dependencies
-    # from the wheezy build, so we cannot use the wheezy sysroot.
-    sysroot = "//build/linux/ubuntu_precise_amd64-sysroot"
+  if (current_cpu == "x64") {
+    sysroot = "$target_sysroot_dir/debian_sid_amd64-sysroot"
+  } else if (current_cpu == "x86") {
+    sysroot = "$target_sysroot_dir/debian_sid_i386-sysroot"
+  } else if (current_cpu == "mipsel") {
+    sysroot = "$target_sysroot_dir/debian_sid_mips-sysroot"
+  } else if (current_cpu == "mips64el") {
+    sysroot = "$target_sysroot_dir/debian_sid_mips64el-sysroot"
+  } else if (current_cpu == "arm") {
+    sysroot = "$target_sysroot_dir/debian_sid_arm-sysroot"
+  } else if (current_cpu == "arm64") {
+    sysroot = "$target_sysroot_dir/debian_sid_arm64-sysroot"
   } else {
-    if (current_cpu == "x64") {
-      sysroot = "//build/linux/debian_wheezy_amd64-sysroot"
-    } else if (current_cpu == "x86") {
-      sysroot = "//build/linux/debian_wheezy_i386-sysroot"
-    } else if (current_cpu == "mipsel") {
-      sysroot = "//build/linux/debian_wheezy_mips-sysroot"
-    } else if (current_cpu == "arm") {
-      sysroot = "//build/linux/debian_wheezy_arm-sysroot"
-    } else if (current_cpu == "arm64") {
-      sysroot = "//build/linux/debian_jessie_arm64-sysroot"
-    } else {
-      # Any other builds don't use a sysroot.
-      sysroot = ""
-    }
+    assert(false, "No linux sysroot for cpu: $target_cpu")
   }
 
   if (sysroot != "") {
-    # Our sysroot images only contains gcc 4.6 headers, but chromium requires
-    # gcc 4.9. Clang is able to detect and work with the 4.6 headers while
-    # gcc is not. This check can be removed if we ever update to a more modern
-    # sysroot.
-    assert(is_clang, "sysroot images require clang (try use_sysroot=false)")
-
     _script_arch = current_cpu
     if (_script_arch == "x86") {
       _script_arch = "i386"
@@ -94,6 +66,38 @@ if (is_linux && target_sysroot_dir != "") {
 } else if (is_ios) {
   import("//build/config/ios/ios_sdk.gni")
   sysroot = ios_sdk_path
+} else if (is_fuchsia) {
+  import("//build/config/fuchsia/config.gni")
+  if (current_cpu == "arm64") {
+    sysroot = fuchsia_sdk + "/sysroot/aarch64-fuchsia"
+  } else if (current_cpu == "x64") {
+    sysroot = fuchsia_sdk + "/sysroot/x86_64-fuchsia"
+  } else {
+    sysroot = ""
+  }
 } else {
   sysroot = ""
+}
+
+if (is_android) {
+  # Android uses unified headers in NDK r16 and later, meaning that the
+  # compile time sysroot and link time sysroot are different
+  link_sysroot = sysroot
+  if (current_cpu == "arm") {
+    link_sysroot = "$android_ndk_root/$arm_android_sysroot_subdir"
+  } else if (current_cpu == "arm64") {
+    link_sysroot = "$android_ndk_root/$arm64_android_sysroot_subdir"
+  } else if (current_cpu == "x86") {
+    link_sysroot = "$android_ndk_root/$x86_android_sysroot_subdir"
+  } else if (current_cpu == "x64") {
+    link_sysroot = "$android_ndk_root/$x86_64_android_sysroot_subdir"
+  } else if (current_cpu == "mipsel") {
+    link_sysroot = "$android_ndk_root/$mips_android_sysroot_subdir"
+  } else if (current_cpu == "mips64el") {
+    link_sysroot = "$android_ndk_root/$mips64_android_sysroot_subdir"
+  } else {
+    assert(false, "No android link sysroot for cpu: $target_cpu")
+  }
+} else {
+  link_sysroot = sysroot
 }
