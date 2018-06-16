@@ -13,3 +13,9 @@ solutions = [{
 }]
 ```
 And then run ```gclient sync```
+
+
+This project use clang enviroment.
+** clang is not support utf16 encoding.([is Bug for clang??](https://bugs.llvm.org/show_bug.cgi?id=32127)).
+
+Fuck clang!!!!!!!!!!!!!!
