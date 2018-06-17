@@ -19,3 +19,8 @@ This project use clang enviroment.
 ** clang is not support utf16 encoding.([is Bug for clang??](https://bugs.llvm.org/show_bug.cgi?id=32127)).
 
 Fuck clang!!!!!!!!!!!!!!
+
+
+============ update 18/6/17
+- Also you can create git repo and then create ```DEPS``` file , depends this project to subfolder, and move ```.gn``` to root directory.
+- And modify ```.gn``` contents
