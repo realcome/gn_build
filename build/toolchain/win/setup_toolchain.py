@@ -240,8 +240,17 @@ def main():
       # The separator for INCLUDE here must match the one used in
       # _LoadToolchainEnv() above.
       include = [p.replace('"', r'\"') for p in env['INCLUDE'].split(';') if p]
-      include_I = ' '.join(['"/I' + i + '"' for i in include])
-      include_imsvc = ' '.join(['"-imsvc' + i + '"' for i in include])
+
+      # Make include path relative to builddir when cwd and sdk in same drive.
+      try:
+        include = map(os.path.relpath, include)
+      except ValueError:
+        pass
+
+      def q(s):  # Quote s if it contains spaces or other weird characters.
+        return s if re.match(r'^[a-zA-Z0-9._/\\:-]*$', s) else '"' + s + '"'
+      include_I = ' '.join([q('/I' + i) for i in include])
+      include_imsvc = ' '.join([q('-imsvc' + i) for i in include])
 
       if (environment_block_name != ''):
         env_block = _FormatAsEnvironmentBlock(env)

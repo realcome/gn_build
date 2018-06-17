@@ -827,15 +827,12 @@ def main():
                          choices=['AndroidStudioCurrent',
                                   'AndroidStudioDefault',
                                   'ChromiumSdkRoot'],
-                         default='ChromiumSdkRoot',
+                         default='AndroidStudioDefault',
                          help="Set the project's SDK root. This can be set to "
                               "Android Studio's current SDK root, the default "
                               "Android Studio SDK root, or Chromium's SDK "
-                              "root. The default is Chromium's SDK root, but "
-                              "using this means that updates and additions to "
-                              "the SDK (e.g. installing emulators), will "
-                              "modify this root, hence possibly causing "
-                              "conflicts on the next repository sync.")
+                              "root in //third_party. The default is Android "
+                              "Studio's SDK root in ~/Android/Sdk.")
   sdk_group.add_argument('--sdk-path',
                          help='An explict path for the SDK root, setting this '
                               'is an alternative to setting the --sdk option')
@@ -879,6 +876,9 @@ def main():
     assert not args.native_targets, 'Native editing requires --all.'
     targets = [re.sub(r'_test_apk$', '_test_apk__apk', t)
                for t in targets_from_args]
+    # Necessary after "gn clean"
+    if not os.path.exists(os.path.join(output_dir, 'build_vars.txt')):
+      _RunGnGen(output_dir)
 
   build_vars = _ReadPropertiesFile(os.path.join(output_dir, 'build_vars.txt'))
   jinja_processor = jinja_template.JinjaProcessor(_FILE_DIR)

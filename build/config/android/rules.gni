@@ -407,9 +407,7 @@ if (enable_java_templates) {
   #     target = ":chrome_public_apk"
   #     output = "$root_gen_dir/chrome/browser/android/${target_name}.h"
   #     exception_files = [
-  #       "//base/android/java/src/org/chromium/base/library_loader/LegacyLinker.java",
   #       "//base/android/java/src/org/chromium/base/library_loader/Linker.java",
-  #       "//base/android/java/src/org/chromium/base/library_loader/ModernLinker.java",
   #     ]
   #   }
   template("generate_jni_registration") {
@@ -2232,6 +2230,18 @@ if (enable_java_templates) {
       _srcjar_deps += [ ":${_template_name}__native_libraries_java" ]
     }
 
+    _extra_native_libs = _sanitizer_runtimes
+    _extra_native_libs_deps = []
+    assert(_extra_native_libs_deps == [])  # Mark as used.
+    if (_native_libs_deps != []) {
+      if (_use_chromium_linker) {
+        _extra_native_libs +=
+            [ "$root_shlib_dir/libchromium_android_linker$shlib_extension" ]
+        _extra_native_libs_deps +=
+            [ "//base/android/linker:chromium_android_linker" ]
+      }
+    }
+
     if (_generate_buildconfig_java) {
       generate_build_config_srcjar("${_template_name}__build_config_java") {
         forward_variables_from(invoker, [ "firebase_app_id" ])
@@ -2262,6 +2272,7 @@ if (enable_java_templates) {
                                "java_files",
                                "no_build_hooks",
                                "javac_args",
+                               "uncompress_shared_libraries",
                              ])
       type = "android_apk"
       main_target_name = _template_name
@@ -2291,6 +2302,7 @@ if (enable_java_templates) {
         if (_enable_multidex) {
           proguard_configs += [ "//build/android/multidex.flags" ]
         }
+        proguard_output_jar_path = _proguard_output_jar_path
       }
       non_native_packed_relocations = _pack_relocations
 
@@ -2305,6 +2317,8 @@ if (enable_java_templates) {
         secondary_abi_shared_libraries_runtime_deps_file =
             _secondary_abi_runtime_deps_file
       }
+
+      extra_shared_libraries = _extra_native_libs
     }
 
     # TODO(cjhopman): This is only ever needed to calculate the list of tests to
@@ -2356,6 +2370,10 @@ if (enable_java_templates) {
           args += [
             "--proguard-config-exclusions=$_rebased_proguard_config_exclusions",
           ]
+        }
+        if (defined(invoker.apk_under_test)) {
+          args += [ "--mapping=@FileArg($_rebased_build_config:deps_info:proguard_under_test_mapping)" ]
+          deps += [ "${invoker.apk_under_test}__proguard" ]
         }
       }
       _dex_sources = [ _proguard_output_jar_path ]
@@ -2463,18 +2481,8 @@ if (enable_java_templates) {
       }
     }
 
-    _extra_native_libs = _sanitizer_runtimes
-    _extra_native_libs_deps = []
-    assert(_extra_native_libs_deps == [])  # Mark as used.
     _extra_native_libs_even_when_incremental = []
     if (_native_libs_deps != []) {
-      if (_use_chromium_linker) {
-        _extra_native_libs +=
-            [ "$root_shlib_dir/libchromium_android_linker$shlib_extension" ]
-        _extra_native_libs_deps +=
-            [ "//base/android/linker:chromium_android_linker" ]
-      }
-
       _create_stack_script_rule_name = "${_template_name}__stack_script"
       _final_deps += [ ":${_create_stack_script_rule_name}" ]
       stack_script(_create_stack_script_rule_name) {

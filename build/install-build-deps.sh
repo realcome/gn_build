@@ -26,45 +26,6 @@ usage() {
   exit 1
 }
 
-# Waits for the user to press 'Y' or 'N'. Either uppercase of lowercase is
-# accepted. Returns 0 for 'Y' and 1 for 'N'. If an optional parameter has
-# been provided to yes_no(), the function also accepts RETURN as a user input.
-# The parameter specifies the exit code that should be returned in that case.
-# The function will echo the user's selection followed by a newline character.
-# Users can abort the function by pressing CTRL-C. This will call "exit 1".
-yes_no() {
-  if [ 0 -ne "${do_default-0}" ] ; then
-    [ $1 -eq 0 ] && echo "Y" || echo "N"
-    return $1
-  fi
-  local c
-  while :; do
-    c="$(trap 'stty echo -iuclc icanon 2>/dev/null' EXIT INT TERM QUIT
-         stty -echo iuclc -icanon 2>/dev/null
-         dd count=1 bs=1 2>/dev/null | od -An -tx1)"
-    case "$c" in
-      " 0a") if [ -n "$1" ]; then
-               [ $1 -eq 0 ] && echo "Y" || echo "N"
-               return $1
-             fi
-             ;;
-      " 79") echo "Y"
-             return 0
-             ;;
-      " 6e") echo "N"
-             return 1
-             ;;
-      "")    echo "Aborted" >&2
-             exit 1
-             ;;
-      *)     # The user pressed an unrecognized key. As we are not echoing
-             # any incorrect user input, alert the user by ringing the bell.
-             (tput bel) 2>/dev/null
-             ;;
-    esac
-  done
-}
-
 # Checks whether a particular package is available in the repos.
 # USAGE: $ package_exists <package name>
 package_exists() {
@@ -82,7 +43,7 @@ package_exists() {
 do_inst_arm=1
 do_inst_nacl=1
 
-while test "$1" != ""
+while [ "$1" != "" ]
 do
   case "$1" in
   --syms)                   do_inst_syms=1;;
@@ -94,6 +55,7 @@ do
   --no-chromeos-fonts)      do_inst_chromeos_fonts=0;;
   --nacl)                   do_inst_nacl=1;;
   --no-nacl)                do_inst_nacl=0;;
+  --add-cross-tool-repo)    add_cross_tool_repo=1;;
   --no-prompt)              do_default=1
                             do_quietly="-qq --assume-yes"
     ;;
@@ -104,7 +66,7 @@ do
   shift
 done
 
-if test "$do_inst_arm" = "1"; then
+if [ "$do_inst_arm" = "1" ]; then
   do_inst_lib32=1
 fi
 
@@ -234,8 +196,8 @@ fi
 # Run-time libraries required by chromeos only
 chromeos_lib_list="libpulse0 libbz2-1.0"
 
-# Full list of required run-time libraries
-lib_list="\
+# List of required run-time libraries
+common_lib_list="\
   libappindicator1
   libappindicator3-1
   libasound2
@@ -260,6 +222,7 @@ lib_list="\
   libspeechd2
   libstdc++6
   libsqlite3-0
+  libuuid1
   libwayland-egl1-mesa
   libx11-6
   libx11-xcb1
@@ -277,96 +240,13 @@ lib_list="\
   libxrender1
   libxtst6
   zlib1g
+"
+
+# Full list of required run-time libraries
+lib_list="\
+  $common_lib_list
   $chromeos_lib_list
 "
-
-# Debugging symbols for all of the run-time libraries
-dbg_list="\
-  libc6-dbg
-  libffi6-dbg
-  libgtk2.0-0-dbg
-  libpcre3-dbg
-  libpixman-1-0-dbg
-  libxau6-dbg
-  libxcb1-dbg
-  libxcomposite1-dbg
-  libxdmcp6-dbg
-  libxext6-dbg
-  libxinerama1-dbg
-  zlib1g-dbg
-"
-
-if package_exists libstdc++6-6-dbg; then
-  dbg_list="${dbg_list} libstdc++6-6-dbg"
-elif package_exists libstdc++6-4.9-dbg; then
-  dbg_list="${dbg_list} libstdc++6-4.9-dbg"
-else
-  dbg_list="${dbg_list} libstdc++6-4.8-dbg"
-fi
-if package_exists libgtk-3-0-dbgsym; then
-  dbg_list="${dbg_list} libgtk-3-0-dbgsym"
-elif package_exists libgtk-3-0-dbg; then
-  dbg_list="${dbg_list} libgtk-3-0-dbg"
-fi
-if package_exists libatk1.0-0-dbgsym; then
-  dbg_list="${dbg_list} libatk1.0-0-dbgsym"
-elif package_exists libatk1.0-dbg; then
-  dbg_list="${dbg_list} libatk1.0-dbg"
-fi
-if package_exists libcairo2-dbgsym; then
-  dbg_list="${dbg_list} libcairo2-dbgsym"
-elif package_exists libcairo2-dbg; then
-  dbg_list="${dbg_list} libcairo2-dbg"
-fi
-if package_exists libfontconfig1-dbgsym; then
-  dbg_list="${dbg_list} libfontconfig1-dbgsym"
-else
-  dbg_list="${dbg_list} libfontconfig1-dbg"
-fi
-if package_exists libxdamage1-dbgsym; then
-  dbg_list="${dbg_list} libxdamage1-dbgsym"
-elif package_exists libxdamage1-dbg; then
-  dbg_list="${dbg_list} libxdamage1-dbg"
-fi
-if package_exists libpango1.0-dev-dbgsym; then
-  dbg_list="${dbg_list} libpango1.0-dev-dbgsym"
-elif package_exists libpango1.0-0-dbg; then
-  dbg_list="${dbg_list} libpango1.0-0-dbg"
-fi
-if package_exists libx11-6-dbg; then
-  dbg_list="${dbg_list} libx11-6-dbg"
-fi
-if package_exists libx11-xcb1-dbg; then
-  dbg_list="${dbg_list} libx11-xcb1-dbg"
-fi
-if package_exists libxfixes3-dbg; then
-  dbg_list="${dbg_list} libxfixes3-dbg"
-fi
-if package_exists libxi6-dbg; then
-  dbg_list="${dbg_list} libxi6-dbg"
-fi
-if package_exists libxrandr2-dbg; then
-  dbg_list="${dbg_list} libxrandr2-dbg"
-fi
-if package_exists libxrender1-dbg; then
-  dbg_list="${dbg_list} libxrender1-dbg"
-fi
-if package_exists libxtst6-dbg; then
-  dbg_list="${dbg_list} libxtst6-dbg"
-fi
-if package_exists libglib2.0-0-dbg; then
-  dbg_list="${dbg_list} libglib2.0-0-dbg"
-fi
-if package_exists libxcursor1-dbgsym; then
-  dbg_list="${dbg_list} libxcursor1-dbgsym"
-elif package_exists libxcursor1-dbg; then
-  dbg_list="${dbg_list} libxcursor1-dbg"
-fi
-if package_exists libsqlite3-0-dbgsym; then
-  dbg_list="${dbg_list} libsqlite3-0-dbgsym"
-else
-  dbg_list="${dbg_list} libsqlite3-0-dbg"
-fi
 
 # 32-bit libraries needed e.g. to compile V8 snapshot for Android or armhf
 lib32_list="linux-libc-dev:i386 libpci3:i386"
@@ -390,20 +270,21 @@ case $distro_codename in
     CROSSTOOLS_LIST="${APT_SOURCESDIR}/crosstools.list"
     arm_list="libc6-dev:armhf
               linux-libc-dev:armhf"
-    if test "$do_inst_arm" = "1"; then
+    if [ "$do_inst_arm" = "1" ]; then
       if $(dpkg-query -W ${GPP_ARM_PACKAGE} &>/dev/null); then
         arm_list+=" ${GPP_ARM_PACKAGE}"
       else
-        echo "The Debian Cross-toolchains repository is necessary to"
-        echo "cross-compile Chromium for arm."
-        echo -n "Do you want me to add it for you (y/N) "
-        if yes_no 1; then
+        if [ "${add_cross_tool_repo}" = "1" ]; then
           gpg --keyserver pgp.mit.edu --recv-keys ${EM_ARCHIVE_KEY_FINGER}
           gpg -a --export ${EM_ARCHIVE_KEY_FINGER} | sudo apt-key add -
           if ! grep "^${EM_REPO}" "${CROSSTOOLS_LIST}" &>/dev/null; then
             echo "${EM_SOURCE}" | sudo tee -a "${CROSSTOOLS_LIST}" >/dev/null
           fi
           arm_list+=" ${GPP_ARM_PACKAGE}"
+        else
+          echo "The Debian Cross-toolchains repository is necessary to"
+          echo "cross-compile Chromium for arm."
+          echo "Rerun with --add-deb-cross-tool-repo to have it added for you."
         fi
       fi
     fi
@@ -451,6 +332,7 @@ nacl_list="\
   libtinfo-dev
   libtinfo-dev:i386
   libtool
+  libuuid1:i386
   libxcomposite1:i386
   libxcursor1:i386
   libxdamage1:i386
@@ -477,11 +359,9 @@ if package_exists libpng16-16; then
 else
   lib_list="${lib_list} libpng12-0"
 fi
-if package_exists libnspr4-dbg; then
-  dbg_list="${dbg_list} libnspr4-dbg libnss3-dbg"
+if package_exists libnspr4; then
   lib_list="${lib_list} libnspr4 libnss3"
 else
-  dbg_list="${dbg_list} libnspr4-0d-dbg libnss3-1d-dbg"
   lib_list="${lib_list} libnspr4-0d libnss3-1d"
 fi
 if package_exists libjpeg-dev; then
@@ -552,40 +432,69 @@ if file -L /sbin/init | grep -q 'ELF 64-bit'; then
   lib32_list="$lib32_list $multilib_package"
 fi
 
-if test "$do_inst_syms" = "" && test 0 -eq ${do_quick_check-0}
-then
-  echo "This script installs all tools and libraries needed to build Chromium."
-  echo ""
-  echo "For most of the libraries, it can also install debugging symbols, which"
-  echo "will allow you to debug code in the system libraries. Most developers"
-  echo "won't need these symbols."
-  echo -n "Do you want me to install them for you (y/N) "
-  if yes_no 1; then
-    do_inst_syms=1
-  fi
-fi
-if test "$do_inst_syms" = "1"; then
+if [ "$do_inst_syms" = "1" ]; then
   echo "Including debugging symbols."
+
+  # Debian is in the process of transitioning to automatic debug packages, which
+  # have the -dbgsym suffix (https://wiki.debian.org/AutomaticDebugPackages).
+  # Untransitioned packages have the -dbg suffix.  And on some systems, neither
+  # will be available, so exclude the ones that are missing.
+  dbg_package_name() {
+    if package_exists "$1-dbgsym"; then
+      echo "$1-dbgsym"
+    elif package_exists "$1-dbg"; then
+      echo "$1-dbg"
+    fi
+  }
+
+  for package in "${common_lib_list}"; do
+    dbg_list="$dbg_list $(dbg_package_name ${package})"
+  done
+
+  # Debugging symbols packages not following common naming scheme
+  if [ "$(dbg_package_name libstdc++6)" == "" ]; then
+    if package_exists libstdc++6-8-dbg; then
+      dbg_list="${dbg_list} libstdc++6-8-dbg"
+    elif package_exists libstdc++6-7-dbg; then
+      dbg_list="${dbg_list} libstdc++6-7-dbg"
+    elif package_exists libstdc++6-6-dbg; then
+      dbg_list="${dbg_list} libstdc++6-6-dbg"
+    elif package_exists libstdc++6-5-dbg; then
+      dbg_list="${dbg_list} libstdc++6-5-dbg"
+    elif package_exists libstdc++6-4.9-dbg; then
+      dbg_list="${dbg_list} libstdc++6-4.9-dbg"
+    elif package_exists libstdc++6-4.8-dbg; then
+      dbg_list="${dbg_list} libstdc++6-4.8-dbg"
+    elif package_exists libstdc++6-4.7-dbg; then
+      dbg_list="${dbg_list} libstdc++6-4.7-dbg"
+    fi
+  fi
+  if [ "$(dbg_package_name libatk1.0-0)" == "" ]; then
+    dbg_list="$dbg_list $(dbg_package_name libatk1.0)"
+  fi
+  if [ "$(dbg_package_name libpango1.0-0)" == "" ]; then
+    dbg_list="$dbg_list $(dbg_package_name libpango1.0-dev)"
+  fi
 else
   echo "Skipping debugging symbols."
   dbg_list=
 fi
 
-if test "$do_inst_lib32" = "1" ; then
+if [ "$do_inst_lib32" = "1" ]; then
   echo "Including 32-bit libraries."
 else
   echo "Skipping 32-bit libraries."
   lib32_list=
 fi
 
-if test "$do_inst_arm" = "1" ; then
+if [ "$do_inst_arm" = "1" ]; then
   echo "Including ARM cross toolchain."
 else
   echo "Skipping ARM cross toolchain."
   arm_list=
 fi
 
-if test "$do_inst_nacl" = "1"; then
+if [ "$do_inst_nacl" = "1" ]; then
   echo "Including NaCl, NaCl toolchain, NaCl ports dependencies."
 else
   echo "Skipping NaCl, NaCl toolchain, NaCl ports dependencies."
@@ -628,7 +537,7 @@ if [ 1 -eq "${do_quick_check-0}" ] ; then
   exit 0
 fi
 
-if test "$do_inst_lib32" = "1" || test "$do_inst_nacl" = "1"; then
+if [ "$do_inst_lib32" = "1" ] || [ "$do_inst_nacl" = "1" ]; then
   sudo dpkg --add-architecture i386
 fi
 sudo apt-get update
@@ -675,7 +584,7 @@ fi
 
 # Install the Chrome OS default fonts. This must go after running
 # apt-get, since install-chromeos-fonts depends on curl.
-if test "$do_inst_chromeos_fonts" != "0"; then
+if [ "$do_inst_chromeos_fonts" != "0" ]; then
   echo
   echo "Installing Chrome OS fonts."
   dir=`echo $0 | sed -r -e 's/\/[^/]+$//'`
